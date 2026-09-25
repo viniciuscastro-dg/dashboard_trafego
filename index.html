@@ -45,6 +45,9 @@ body{font-family:"Inter",sans-serif;background:var(--gray-50);color:var(--gray-8
 .config-row,.upload-row{display:flex;gap:8px;flex-wrap:wrap;}
 .config-row input{flex:1;min-width:220px;font-family:"Inter",sans-serif;font-size:13px;padding:10px 12px;border:1px solid var(--gray-200);border-radius:10px;color:var(--gray-800);}
 .config-row input:focus{outline:2px solid var(--dg-accent);outline-offset:1px;}
+.config-notes{width:100%;margin-top:14px;min-height:90px;font-family:"Inter",sans-serif;font-size:13px;line-height:1.55;color:var(--gray-800);padding:12px 14px;border:1px solid var(--gray-200);border-radius:12px;resize:vertical;background:var(--gray-50);}
+.config-notes:focus{outline:2px solid var(--dg-accent);outline-offset:1px;background:var(--white);}
+.config-notes-label{display:block;font-family:"Manrope",sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--gray-400);margin-top:16px;margin-bottom:6px;}
 .config-status,.file-status{font-size:12px;color:var(--gray-400);margin-top:10px;}
 .upload-card{border-style:dashed;border-width:2px;text-align:center;}
 .upload-card.drag{border-color:var(--dg-accent);background:var(--dg-accent-pale);}
@@ -95,18 +98,18 @@ table.dt td{font-size:12px;color:var(--gray-700);padding:10px 14px;border-bottom
 table.dt tr:last-child td{border-bottom:none;}
 table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-800);}
 
-.insights-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
-.insight-card{border-radius:16px;padding:22px;}
-.insight-card--green{background:var(--green-pale);border:1px solid #A7F3D0;}
-.insight-card--blue{background:var(--dg-accent-pale);border:1px solid #BFDBFE;}
-.insight-card h4{font-family:"Manrope",sans-serif;font-size:14.5px;font-weight:800;color:var(--dg-blue);margin-bottom:6px;}
-.insight-card p{font-size:12.5px;color:var(--gray-600);line-height:1.5;}
+/* Próximas ações */
+.actions-card{background:var(--white);border:1px solid var(--gray-200);border-radius:20px;padding:20px 22px;}
+.actions-card textarea{width:100%;min-height:150px;border:none;outline:none;resize:vertical;font-family:"Inter",sans-serif;font-size:13.5px;color:var(--gray-800);line-height:1.65;background:transparent;}
+.actions-card textarea::placeholder{color:var(--gray-400);}
+.actions-hint{font-size:11.5px;color:var(--gray-400);margin-top:10px;display:flex;align-items:center;gap:6px;}
+.actions-hint::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--green);}
 
 .empty-state{display:none;text-align:center;padding:60px 20px;color:var(--gray-400);}
 .empty-state.show{display:block;}
 #dashboard{display:none;}
 
-@media(max-width:800px){.kpi-grid,.channel-grid,.insights-grid{grid-template-columns:1fr;}}
+@media(max-width:800px){.kpi-grid,.channel-grid{grid-template-columns:1fr;}}
 </style>
 </head>
 <body>
@@ -137,6 +140,9 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
       <button class="btn btn--ghost" id="btnDisconnect" style="display:none;">Desconectar</button>
     </div>
     <div class="config-status" id="configStatus"></div>
+
+    <label class="config-notes-label" for="configNotes">Anotações do cliente / planilha</label>
+    <textarea id="configNotes" class="config-notes" placeholder="Escreva aqui observações sobre a planilha, contatos, contexto do cliente..."></textarea>
   </div>
 
   <div class="upload-card" id="uploadCard">
@@ -176,6 +182,7 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
         <div class="kpi-card">
           <div class="kpi-label">Vendas por Fora</div>
           <div class="kpi-value" id="kpiFora">—</div>
+          <div class="kpi-delta" id="kpiForaDelta"></div>
         </div>
       </div>
     </section>
@@ -205,9 +212,12 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
     </section>
 
     <section class="section">
-      <span class="section-label">Leitura Rápida</span>
-      <h2 class="section-title" style="margin-bottom:18px;">Destaques</h2>
-      <div class="insights-grid" id="insightsGrid"></div>
+      <span class="section-label">Planejamento</span>
+      <h2 class="section-title" style="margin-bottom:18px;">Próximas ações</h2>
+      <div class="actions-card">
+        <textarea id="actionsEditor" placeholder="Anote aqui as próximas ações, testes a fazer, ajustes de campanha, mudanças de criativo, orçamento, etc."></textarea>
+        <div class="actions-hint" id="actionsHint">Salvo automaticamente neste navegador</div>
+      </div>
     </section>
   </div>
 
@@ -228,7 +238,6 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
   function shortMonth(label){
     const raw = (label||'').toString().trim();
     if(/^\d+(\.\d+)?$/.test(raw)){
-      // fallback: número serial de data (Excel/Sheets) escapou sem formatação
       const serial = parseFloat(raw);
       const d = new Date(Date.UTC(1899,11,30) + serial*86400000);
       const abbr = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][d.getUTCMonth()];
@@ -256,7 +265,6 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
   }
 
   function parseWideTable(rows){
-    // rows: array of arrays. row0 = labels/months.
     if(!rows || !rows.length) return [];
     const header = rows[0];
     const monthCols = [];
@@ -283,7 +291,7 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
       const roasGoogle = get('roasGoogle') != null ? get('roasGoogle') : (invGoogle>0 && fatGoogle!=null ? fatGoogle/invGoogle : null);
       const roasMeta = get('roasMeta') != null ? get('roasMeta') : (invMeta>0 && fatMeta!=null ? fatMeta/invMeta : null);
       return {mes:m.short, mesFull:m.label, faturamentoSite, fatGoogle, fatMeta, invGoogle, invMeta, invTotal, roasSite, roasGoogle, roasMeta, vendasPorFora:get('vendasPorFora')};
-    }).filter(d => [d.faturamentoSite,d.fatGoogle,d.fatMeta,d.invGoogle,d.invMeta].some(v=>v!=null && v!==0));
+    }).filter(d => [d.faturamentoSite,d.fatGoogle,d.fatMeta,d.invGoogle,d.invMeta,d.vendasPorFora].some(v=>v!=null && v!==0));
     return result;
   }
 
@@ -348,6 +356,8 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
     document.getElementById('kpiInv').textContent = d.invTotal!=null?fmtBRL(d.invTotal):'—';
     document.getElementById('kpiRoas').textContent = d.roasSite!=null?d.roasSite.toFixed(2)+'x':'—';
     document.getElementById('kpiFora').textContent = d.vendasPorFora!=null?fmtBRL(d.vendasPorFora):'—';
+
+    // Delta Faturamento vs mês anterior
     const prev = currentData[idx-1];
     const deltaEl = document.getElementById('kpiFatDelta');
     if(prev && prev.faturamentoSite && d.faturamentoSite!=null){
@@ -355,24 +365,24 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
       deltaEl.textContent = (pct>=0?'▲ ':'▼ ')+Math.abs(pct).toFixed(0)+'% vs '+prev.mes;
       deltaEl.className = 'kpi-delta '+(pct>=0?'up':'down');
     } else { deltaEl.textContent=''; }
+
+    // Delta Vendas por Fora vs média dos outros meses
+    const foraDeltaEl = document.getElementById('kpiForaDelta');
+    const others = currentData
+      .map((m,i)=> i!==idx ? m.vendasPorFora : null)
+      .filter(v => v!=null && v>0);
+    if(others.length && d.vendasPorFora!=null && d.vendasPorFora>0){
+      const avg = others.reduce((a,b)=>a+b,0)/others.length;
+      const pct = ((d.vendasPorFora-avg)/avg*100);
+      foraDeltaEl.textContent = (pct>=0?'▲ ':'▼ ')+Math.abs(pct).toFixed(0)+'% vs média histórica ('+fmtBRL(avg)+')';
+      foraDeltaEl.className = 'kpi-delta '+(pct>=0?'up':'down');
+    } else {
+      foraDeltaEl.textContent = '';
+    }
+
     document.getElementById('channelGrid').innerHTML =
       renderChannelCard('Google Ads','channel-dot--google', d.fatGoogle, d.invGoogle, d.roasGoogle) +
       renderChannelCard('Meta Ads','channel-dot--meta', d.fatMeta, d.invMeta, d.roasMeta);
-  }
-
-  function renderInsights(data){
-    const withRoas = data.filter(d=>d.roasSite!=null);
-    const withFat = data.filter(d=>d.faturamentoSite!=null);
-    let html = '';
-    if(withRoas.length){
-      const best = withRoas.reduce((a,b)=>a.roasSite>b.roasSite?a:b);
-      html += `<div class="insight-card insight-card--blue"><h4>${best.mesFull}</h4><p>Melhor ROAS do período: ${best.roasSite.toFixed(2)}x.</p></div>`;
-    }
-    if(withFat.length){
-      const best = withFat.reduce((a,b)=>a.faturamentoSite>b.faturamentoSite?a:b);
-      html += `<div class="insight-card insight-card--green"><h4>${best.mesFull}</h4><p>Maior faturamento do site: ${fmtBRL(best.faturamentoSite)}.</p></div>`;
-    }
-    document.getElementById('insightsGrid').innerHTML = html || '<p style="color:var(--gray-400);font-size:13px;">Sem dados suficientes.</p>';
   }
 
   function render(data){
@@ -387,7 +397,6 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
     renderMonth(data.length-1);
     renderChart(data);
     renderTable(data);
-    renderInsights(data);
     try{ localStorage.setItem('dg-dashboard-data', JSON.stringify(data)); }catch(e){}
   }
   document.getElementById('monthSelect').addEventListener('change', e=>renderMonth(parseInt(e.target.value)));
@@ -451,31 +460,35 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
     try{
       if(!silent) configStatus.textContent = 'Conectando...';
       const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${gid}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { redirect: 'manual' });
+
+      // Redirecionamento para login => planilha privada
+      if(res.type === 'opaqueredirect' || res.status === 0 || res.status === 302 || res.status === 401 || res.status === 403){
+        throw new Error('Essa planilha não está pública. No Google Sheets, vá em Compartilhar → Acesso geral → "Qualquer pessoa com o link" (Leitor) e tente de novo.');
+      }
+
       const text = await res.text();
       const looksLikeLogin = /accounts\.google\.com|<html|ServiceLogin|signin/i.test(text.slice(0,300));
       if(!res.ok || looksLikeLogin){
-        configStatus.textContent = 'Essa planilha não está acessível publicamente. Abra o Google Sheets → Compartilhar → em "Acesso geral" mude para "Qualquer pessoa com o link" (Leitor) e tente conectar de novo.';
-        syncBadge.style.display='none';
-        return;
+        throw new Error('Essa planilha não está acessível publicamente. Verifique o compartilhamento no Google Sheets.');
       }
+
       const parsed = Papa.parse(text.trim(), {skipEmptyLines:false});
       const data = parseWideTable(parsed.data);
       if(!data.length){
-        configStatus.textContent = 'Consegui acessar a planilha, mas não encontrei linhas como "Faturamento Site", "Fat. Google" etc. Confira se os nomes das linhas na coluna A batem com o esperado.';
-        syncBadge.style.display='none';
-        return;
+        throw new Error('Consegui acessar a planilha, mas não encontrei linhas como "Faturamento Site", "Fat. Google" etc. Confira os nomes na coluna A.');
       }
+
       render(data);
       const now = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-      syncBadge.style.display='flex';
+      syncBadge.style.display = 'flex';
       syncText.textContent = 'Sincronizado às ' + now;
       configStatus.textContent = 'Conectado. Atualiza automaticamente a cada 5 minutos.';
-      document.getElementById('btnDisconnect').style.display='inline-block';
+      document.getElementById('btnDisconnect').style.display = 'inline-block';
       try{ localStorage.setItem('dg-sheet-id', sheetId); localStorage.setItem('dg-sheet-gid', gid); }catch(e){}
     }catch(err){
-      configStatus.textContent = 'Não consegui conectar (erro de rede ou CORS). Confira o link e o compartilhamento público da planilha.';
-      syncBadge.style.display='none';
+      configStatus.textContent = err.message;
+      syncBadge.style.display = 'none';
     }
   }
   function startAutoSync(sheetId, gid){
@@ -497,6 +510,24 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
     document.getElementById('btnDisconnect').style.display='none';
     configStatus.textContent = 'Desconectado.';
   };
+
+  /* ---- Campos persistentes (anotações e próximas ações) ---- */
+  const configNotes = document.getElementById('configNotes');
+  const actionsEditor = document.getElementById('actionsEditor');
+  const actionsHint = document.getElementById('actionsHint');
+  let hintTimer = null;
+  function flashSaved(el){
+    el.textContent = 'Salvo agora';
+    el.style.color = 'var(--green)';
+    if(hintTimer) clearTimeout(hintTimer);
+    hintTimer = setTimeout(()=>{ el.textContent = 'Salvo automaticamente neste navegador'; el.style.color=''; }, 1500);
+  }
+  try{
+    const n = localStorage.getItem('dg-config-notes'); if(n!=null) configNotes.value = n;
+    const a = localStorage.getItem('dg-actions'); if(a!=null) actionsEditor.value = a;
+  }catch(e){}
+  configNotes.addEventListener('input', ()=>{ try{ localStorage.setItem('dg-config-notes', configNotes.value); }catch(e){} });
+  actionsEditor.addEventListener('input', ()=>{ try{ localStorage.setItem('dg-actions', actionsEditor.value); flashSaved(actionsHint); }catch(e){} });
 
   try{
     const savedId = localStorage.getItem('dg-sheet-id');
