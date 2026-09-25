@@ -179,10 +179,10 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
           <div class="kpi-label">ROAS Site</div>
           <div class="kpi-value" id="kpiRoas">—</div>
         </div>
-        <div class="kpi-card">
-          <div class="kpi-label">Vendas por Fora</div>
-          <div class="kpi-value" id="kpiFora">—</div>
-          <div class="kpi-delta" id="kpiForaDelta"></div>
+        <div class="kpi-card" id="kpiCompCard">
+          <div class="kpi-label">Comparativo Histórico</div>
+          <div class="kpi-value" id="kpiCompPct">—</div>
+          <div class="kpi-delta" id="kpiCompDelta"></div>
         </div>
       </div>
     </section>
@@ -250,7 +250,7 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
   }
 
   function rowKey(label){
-    const l = (label||'').toLowerCase();
+    const l = (label||'').toLowerCase().trim();
     if(l.includes('faturamento') && l.includes('site')) return 'faturamentoSite';
     if(l.includes('fat') && l.includes('google')) return 'fatGoogle';
     if(l.includes('fat') && l.includes('meta')) return 'fatMeta';
@@ -260,7 +260,7 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
     if(l.includes('roas') && l.includes('site')) return 'roasSite';
     if(l.includes('roas') && l.includes('google')) return 'roasGoogle';
     if(l.includes('roas') && l.includes('meta')) return 'roasMeta';
-    if(l.includes('venda') && l.includes('fora')) return 'vendasPorFora';
+    if((l.includes('venda') && (l.includes('fora') || l.includes('externa')))) return 'vendasPorFora';
     return null;
   }
 
@@ -355,7 +355,6 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
     document.getElementById('kpiFat').textContent = d.faturamentoSite!=null?fmtBRL(d.faturamentoSite):'—';
     document.getElementById('kpiInv').textContent = d.invTotal!=null?fmtBRL(d.invTotal):'—';
     document.getElementById('kpiRoas').textContent = d.roasSite!=null?d.roasSite.toFixed(2)+'x':'—';
-    document.getElementById('kpiFora').textContent = d.vendasPorFora!=null?fmtBRL(d.vendasPorFora):'—';
 
     // Delta Faturamento vs mês anterior
     const prev = currentData[idx-1];
@@ -366,18 +365,24 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
       deltaEl.className = 'kpi-delta '+(pct>=0?'up':'down');
     } else { deltaEl.textContent=''; }
 
-    // Delta Vendas por Fora vs média dos outros meses
-    const foraDeltaEl = document.getElementById('kpiForaDelta');
+    /* ----- Comparativo Histórico (Faturamento Site vs média dos outros meses) ----- */
+    const compPctEl = document.getElementById('kpiCompPct');
+    const compDeltaEl = document.getElementById('kpiCompDelta');
+
     const others = currentData
-      .map((m,i)=> i!==idx ? m.vendasPorFora : null)
+      .map((m,i)=> i!==idx ? m.faturamentoSite : null)
       .filter(v => v!=null && v>0);
-    if(others.length && d.vendasPorFora!=null && d.vendasPorFora>0){
+
+    if(others.length && d.faturamentoSite!=null && d.faturamentoSite>0){
       const avg = others.reduce((a,b)=>a+b,0)/others.length;
-      const pct = ((d.vendasPorFora-avg)/avg*100);
-      foraDeltaEl.textContent = (pct>=0?'▲ ':'▼ ')+Math.abs(pct).toFixed(0)+'% vs média histórica ('+fmtBRL(avg)+')';
-      foraDeltaEl.className = 'kpi-delta '+(pct>=0?'up':'down');
+      const pct = ((d.faturamentoSite-avg)/avg*100);
+      compPctEl.textContent = (pct>=0?'+':'−')+Math.abs(pct).toFixed(0)+'%';
+      compDeltaEl.textContent = (pct>=0?'▲ Acima':'▼ Abaixo')+' da média histórica ('+fmtBRL(avg)+')';
+      compDeltaEl.className = 'kpi-delta '+(pct>=0?'up':'down');
     } else {
-      foraDeltaEl.textContent = '';
+      compPctEl.textContent = '—';
+      compDeltaEl.textContent = others.length ? 'Sem valor no mês' : '';
+      compDeltaEl.className = 'kpi-delta';
     }
 
     document.getElementById('channelGrid').innerHTML =
@@ -462,7 +467,6 @@ table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-
       const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${gid}`;
       const res = await fetch(url, { redirect: 'manual' });
 
-      // Redirecionamento para login => planilha privada
       if(res.type === 'opaqueredirect' || res.status === 0 || res.status === 302 || res.status === 401 || res.status === 403){
         throw new Error('Essa planilha não está pública. No Google Sheets, vá em Compartilhar → Acesso geral → "Qualquer pessoa com o link" (Leitor) e tente de novo.');
       }
