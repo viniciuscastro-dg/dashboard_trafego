@@ -1,551 +1,64 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Dashboard de Tráfego & Faturamento</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-:root{
-  --dg-blue:#0D2B6E;--dg-blue-light:#2D5CC8;--dg-accent:#3B82F6;--dg-accent-pale:#EEF3FD;
-  --white:#FFFFFF;--gray-50:#F8F9FC;--gray-100:#F1F3F8;--gray-200:#E2E7F0;--gray-400:#94A3B8;
-  --gray-600:#4B5C75;--gray-700:#374151;--gray-800:#1E2A3B;
-  --green:#10B981;--green-pale:#ECFDF5;--amber:#F59E0B;--amber-pale:#FFFBEB;
-  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+function parseNuvemshop(rows){
+  // ---- Detecção do cabeçalho (robusta a encoding corrompido) ----
+  function findHeader(){
+    // Tentativa 1: match por texto, tolerante a acentos corrompidos
+    for(let i=0;i<Math.min(rows.length,20);i++){
+      const r = rows[i]||[];
+      if(r.length < 15) continue;
+      const first = clean(r[0]).toLowerCase();
+      // N.mero do Pedido (aceita ú, u, u corrompido, etc)
+      if(/^n.mero do pedido/.test(first)) return i;
+      // Fallback: procura célula que contenha "pedido" e a linha tenha muitas colunas
+      const cells = r.map(c=>clean(c).toLowerCase());
+      const hasPedido = cells.some(c=>c.includes('pedido'));
+      const hasData = cells.some(c=>c === 'data' || /^data$/i.test(c));
+      const hasTotal = cells.some(c=>c === 'total' || /^total$/i.test(c));
+      if(hasPedido && hasData && hasTotal && r.length >= 30) return i;
+    }
+    // Tentativa 3 (último recurso): a linha mais larga das primeiras 20
+    let bestIdx = -1, bestCols = 0;
+    for(let i=0;i<Math.min(rows.length,20);i++){
+      const r = rows[i]||[];
+      if(r.length > bestCols){ bestCols = r.length; bestIdx = i; }
+    }
+    return bestCols >= 30 ? bestIdx : -1;
+  }
+
+  const headerIdx = findHeader();
+  if(headerIdx<0) return null;
+  const headers = rows[headerIdx].map(h=>clean(h));
+  const idx = {
+    numero:    findCol(headers, [/^N.mero do Pedido$/i, /Pedido$/i]),
+    data:      findCol(headers, [/^Data$/i]),
+    status:    findCol(headers, [/^Status do Pedido$/i]),
+    statusPag: findCol(headers, [/^Status do Pagamento$/i]),
+    total:     findCol(headers, [/^Total$/i])
+  };
+  if(idx.data<0 || idx.total<0) return null;
+
+  const orders = [];
+  for(let i=headerIdx+1;i<rows.length;i++){
+    const r = rows[i]; if(!r || !r.length) continue;
+    const data = parseDateBR(clean(r[idx.data]));
+    if(!data) continue;
+    const status = clean(r[idx.status]);
+    const statusPag = idx.statusPag>=0 ? clean(r[idx.statusPag]) : '';
+    const total = parseNum(r[idx.total]);
+    const cancelado = /cancel/i.test(status);
+    const pendente = /vencido|pendente|aguardando|n[ãa]o pago/i.test(statusPag);
+    const valido = !cancelado && !pendente && total != null && total > 0;
+    orders.push({ data, status, statusPag, total: total||0, valido });
+  }
+
+  // Janelas de 15 dias com base na data mais recente
+  const validos = orders.filter(o=>o.valido);
+  if(!validos.length) return { orders, period:null };
+  const maxTs = Math.max(...validos.map(o=>o.data.getTime()));
+  const currEnd = new Date(maxTs); currEnd.setHours(23,59,59,999);
+  const currStart = new Date(currEnd); currStart.setDate(currStart.getDate()-14); currStart.setHours(0,0,0,0);
+  const prevEnd = new Date(currStart); prevEnd.setDate(prevEnd.getDate()-1); prevEnd.setHours(23,59,59,999);
+  const prevStart = new Date(prevEnd); prevStart.setDate(prevStart.getDate()-14); prevStart.setHours(0,0,0,0);
+  const period = { currStart, currEnd, prevStart, prevEnd };
+
+  return { orders, period };
 }
-html{scroll-padding-top:env(safe-area-inset-top,0px);}
-body{font-family:"Inter",sans-serif;background:var(--gray-50);color:var(--gray-800);line-height:1.6;-webkit-font-smoothing:antialiased;min-height:100%;}
-.wrap{max-width:1140px;margin:0 auto;padding:28px 20px 64px;}
-
-.topbar{background:var(--dg-blue);color:#fff;padding:22px 20px;position:sticky;top:0;z-index:5;}
-.topbar-inner{max-width:1140px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;}
-.topbar h1{font-family:"Manrope",sans-serif;font-size:18px;font-weight:800;}
-.topbar p{font-size:12px;color:#93C5FD;margin-top:2px;}
-.topbar-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
-.btn{font-family:"Manrope",sans-serif;font-size:12.5px;font-weight:700;padding:9px 16px;border-radius:100px;border:1px solid rgba(255,255,255,.35);background:transparent;color:#fff;cursor:pointer;transition:background .15s;}
-.btn:hover{background:rgba(255,255,255,.12);}
-.btn--solid{background:var(--dg-accent);border-color:var(--dg-accent);}
-.btn--solid:hover{background:var(--dg-blue-light);}
-.btn--primary{background:var(--dg-blue);color:#fff;border-color:var(--dg-blue);}
-.btn--primary:hover{background:var(--dg-blue-light);}
-.btn--ghost{background:var(--white);color:var(--dg-blue);border-color:var(--gray-200);}
-.btn--ghost:hover{background:var(--gray-50);}
-.sync-badge{font-size:11px;color:#93C5FD;display:flex;align-items:center;gap:6px;}
-.sync-dot{width:7px;height:7px;border-radius:50%;background:var(--green);}
-
-.config-card,.upload-card{background:var(--white);border:1px solid var(--gray-200);border-radius:16px;padding:20px 22px;margin-bottom:20px;}
-.config-card{display:none;}
-.config-card.show{display:block;}
-.config-card h3,.upload-card h3{font-family:"Manrope",sans-serif;font-size:14px;font-weight:800;color:var(--dg-blue);margin-bottom:6px;}
-.config-card p,.upload-card p{font-size:12.5px;color:var(--gray-600);margin-bottom:12px;line-height:1.5;}
-.config-row,.upload-row{display:flex;gap:8px;flex-wrap:wrap;}
-.config-row input{flex:1;min-width:220px;font-family:"Inter",sans-serif;font-size:13px;padding:10px 12px;border:1px solid var(--gray-200);border-radius:10px;color:var(--gray-800);}
-.config-row input:focus{outline:2px solid var(--dg-accent);outline-offset:1px;}
-.config-notes{width:100%;margin-top:14px;min-height:90px;font-family:"Inter",sans-serif;font-size:13px;line-height:1.55;color:var(--gray-800);padding:12px 14px;border:1px solid var(--gray-200);border-radius:12px;resize:vertical;background:var(--gray-50);}
-.config-notes:focus{outline:2px solid var(--dg-accent);outline-offset:1px;background:var(--white);}
-.config-notes-label{display:block;font-family:"Manrope",sans-serif;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--gray-400);margin-top:16px;margin-bottom:6px;}
-.config-status,.file-status{font-size:12px;color:var(--gray-400);margin-top:10px;}
-.upload-card{border-style:dashed;border-width:2px;text-align:center;}
-.upload-card.drag{border-color:var(--dg-accent);background:var(--dg-accent-pale);}
-#fileInput{display:none;}
-
-section.section{padding:8px 0 36px;}
-.section-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:18px;}
-.section-label{display:inline-flex;align-items:center;gap:8px;font-family:"Manrope",sans-serif;font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--dg-accent);margin-bottom:14px;}
-.section-label::before{content:"";width:20px;height:2px;background:var(--dg-accent);border-radius:1px;}
-.section-title{font-family:"Manrope",sans-serif;font-size:24px;font-weight:800;color:var(--dg-blue);letter-spacing:-.02em;}
-select#monthSelect{font-family:"Manrope",sans-serif;font-size:13px;font-weight:700;color:var(--dg-blue);padding:9px 34px 9px 16px;border-radius:100px;border:1px solid var(--gray-200);background:var(--white);cursor:pointer;min-width:180px;-webkit-appearance:none;-moz-appearance:none;appearance:none;background-image:url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230D2B6E' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");background-repeat:no-repeat;background-position:right 12px center;background-size:16px;}
-select#monthSelect::-ms-expand{display:none;}
-
-.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
-.kpi-card{background:var(--white);border:1px solid var(--gray-200);border-radius:16px;padding:22px 20px;}
-.kpi-card--highlight{background:var(--dg-blue);border-color:var(--dg-blue);}
-.kpi-card--highlight .kpi-label{color:#93C5FD;}
-.kpi-card--highlight .kpi-value{color:#fff;}
-.kpi-label{font-family:"Manrope",sans-serif;font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--gray-400);margin-bottom:8px;}
-.kpi-value{font-family:"Manrope",sans-serif;font-size:24px;font-weight:800;color:var(--dg-blue);letter-spacing:-.02em;}
-.kpi-delta{font-size:11px;font-weight:700;margin-top:6px;}
-.kpi-delta.up{color:var(--green);}
-.kpi-delta.down{color:#DC2626;}
-
-.channel-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
-.channel-card{border:1px solid var(--gray-200);border-radius:20px;overflow:hidden;background:var(--white);}
-.channel-card-header{padding:20px 24px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--gray-100);}
-.channel-name{font-family:"Manrope",sans-serif;font-size:15px;font-weight:800;display:flex;align-items:center;gap:9px;}
-.channel-dot{width:8px;height:8px;border-radius:50%;}
-.channel-dot--google{background:#4285F4;}
-.channel-dot--meta{background:#0866FF;}
-.channel-roas{font-family:"Manrope",sans-serif;font-size:20px;font-weight:800;color:var(--dg-blue);}
-.channel-roas-label{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--gray-400);text-align:right;}
-.channel-card-body{padding:20px 24px;display:grid;grid-template-columns:repeat(2,1fr);gap:16px;}
-.channel-stat label{font-size:10.5px;font-weight:600;color:var(--gray-400);text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:4px;}
-.channel-stat span{font-family:"Manrope",sans-serif;font-size:16px;font-weight:700;}
-
-.chart-card{background:var(--white);border:1px solid var(--gray-200);border-radius:20px;padding:24px;}
-.chart-legend{display:flex;gap:18px;margin-bottom:14px;font-size:12px;color:var(--gray-600);}
-.chart-legend span{display:inline-flex;align-items:center;gap:6px;}
-.leg-dot{width:9px;height:9px;border-radius:50%;}
-
-.tbl-wrap{background:var(--white);border:1px solid var(--gray-200);border-radius:20px;overflow:hidden;}
-.tbl-scroll{overflow-x:auto;}
-table.dt{width:100%;border-collapse:collapse;}
-table.dt th{font-family:"Manrope",sans-serif;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--gray-400);padding:10px 14px;text-align:left;background:var(--gray-50);border-bottom:1px solid var(--gray-200);white-space:nowrap;}
-table.dt td{font-size:12px;color:var(--gray-700);padding:10px 14px;border-bottom:1px solid var(--gray-100);white-space:nowrap;}
-table.dt tr:last-child td{border-bottom:none;}
-table.dt .val{font-family:"Manrope",sans-serif;font-weight:700;color:var(--gray-800);}
-
-/* Próximas ações */
-.actions-card{background:var(--white);border:1px solid var(--gray-200);border-radius:20px;padding:20px 22px;}
-.actions-card textarea{width:100%;min-height:150px;border:none;outline:none;resize:vertical;font-family:"Inter",sans-serif;font-size:13.5px;color:var(--gray-800);line-height:1.65;background:transparent;}
-.actions-card textarea::placeholder{color:var(--gray-400);}
-.actions-hint{font-size:11.5px;color:var(--gray-400);margin-top:10px;display:flex;align-items:center;gap:6px;}
-.actions-hint::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--green);}
-
-.empty-state{display:none;text-align:center;padding:60px 20px;color:var(--gray-400);}
-.empty-state.show{display:block;}
-#dashboard{display:none;}
-
-@media(max-width:800px){.kpi-grid,.channel-grid{grid-template-columns:1fr;}}
-</style>
-</head>
-<body>
-
-<div class="topbar">
-  <div class="topbar-inner">
-    <div>
-      <h1 id="clientName">Dashboard de Tráfego &amp; Faturamento</h1>
-      <p id="clientPeriod">Conecte a planilha para começar</p>
-    </div>
-    <div class="topbar-actions">
-      <span class="sync-badge" id="syncBadge" style="display:none;"><span class="sync-dot"></span><span id="syncText">Sincronizado</span></span>
-      <button class="btn" id="btnTemplate">Baixar modelo</button>
-      <button class="btn" id="btnConfig">Conectar planilha</button>
-      <button class="btn btn--solid" id="btnUploadTop">Enviar arquivo</button>
-    </div>
-  </div>
-</div>
-
-<div class="wrap">
-
-  <div class="config-card" id="configCard">
-    <h3>Conectar a uma planilha do Google Sheets</h3>
-    <p>Cole o link da aba com os dados mensais (a URL já traz o <code>gid</code> da aba certa). A planilha precisa estar como "Qualquer pessoa com o link pode visualizar". O formato esperado: uma linha "Mês" com os meses nas colunas, e linhas abaixo para Faturamento Site, Fat. Google, Fat. Meta, Inv. Google Ads, Inv. Meta Ads (como no seu modelo atual).</p>
-    <div class="config-row">
-      <input type="text" id="sheetUrlInput" placeholder="https://docs.google.com/spreadsheets/d/.../edit?gid=0">
-      <button class="btn btn--primary" id="btnConnect">Conectar</button>
-      <button class="btn btn--ghost" id="btnDisconnect" style="display:none;">Desconectar</button>
-    </div>
-    <div class="config-status" id="configStatus"></div>
-
-    <label class="config-notes-label" for="configNotes">Anotações do cliente / planilha</label>
-    <textarea id="configNotes" class="config-notes" placeholder="Escreva aqui observações sobre a planilha, contatos, contexto do cliente..."></textarea>
-  </div>
-
-  <div class="upload-card" id="uploadCard">
-    <h3>Ou envie a planilha manualmente</h3>
-    <p>Arraste o arquivo .xlsx aqui, ou use o botão abaixo. Sem conexão com o Sheets, você precisa reenviar o arquivo a cada atualização.</p>
-    <div class="upload-row" style="justify-content:center;">
-      <button class="btn btn--primary" id="btnUpload">Escolher arquivo</button>
-      <button class="btn btn--ghost" id="btnTemplate2">Baixar modelo</button>
-    </div>
-    <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
-    <div class="file-status" id="fileStatus"></div>
-  </div>
-
-  <div id="dashboard">
-    <section class="section">
-      <div class="section-head">
-        <div>
-          <span class="section-label">Visão Geral</span>
-          <h2 class="section-title">Resultados do mês</h2>
-        </div>
-        <select id="monthSelect"></select>
-      </div>
-      <div class="kpi-grid">
-        <div class="kpi-card kpi-card--highlight">
-          <div class="kpi-label">Faturamento Site</div>
-          <div class="kpi-value" id="kpiFat">—</div>
-          <div class="kpi-delta" id="kpiFatDelta"></div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-label">Investimento Total (G+M)</div>
-          <div class="kpi-value" id="kpiInv">—</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-label">ROAS Site</div>
-          <div class="kpi-value" id="kpiRoas">—</div>
-        </div>
-        <div class="kpi-card" id="kpiCompCard">
-          <div class="kpi-label">Comparativo Histórico</div>
-          <div class="kpi-value" id="kpiCompPct">—</div>
-          <div class="kpi-delta" id="kpiCompDelta"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="section">
-      <span class="section-label">Por Canal</span>
-      <h2 class="section-title" style="margin-bottom:18px;">Google Ads &amp; Meta Ads</h2>
-      <div class="channel-grid" id="channelGrid"></div>
-    </section>
-
-    <section class="section">
-      <span class="section-label">Evolução</span>
-      <h2 class="section-title" style="margin-bottom:18px;">Faturamento x Investimento por mês</h2>
-      <div class="chart-card">
-        <div class="chart-legend">
-          <span><span class="leg-dot" style="background:#0D2B6E"></span>Faturamento Site</span>
-          <span><span class="leg-dot" style="background:#3B82F6"></span>Investimento Total</span>
-        </div>
-        <div id="chartWrap"></div>
-      </div>
-    </section>
-
-    <section class="section">
-      <span class="section-label">Detalhamento</span>
-      <h2 class="section-title" style="margin-bottom:18px;">Tabela mensal</h2>
-      <div class="tbl-wrap"><div class="tbl-scroll"><table class="dt" id="monthTable"></table></div></div>
-    </section>
-
-    <section class="section">
-      <span class="section-label">Planejamento</span>
-      <h2 class="section-title" style="margin-bottom:18px;">Próximas ações</h2>
-      <div class="actions-card">
-        <textarea id="actionsEditor" placeholder="Anote aqui as próximas ações, testes a fazer, ajustes de campanha, mudanças de criativo, orçamento, etc."></textarea>
-        <div class="actions-hint" id="actionsHint">Salvo automaticamente neste navegador</div>
-      </div>
-    </section>
-  </div>
-
-  <div class="empty-state" id="emptyState">Nenhuma planilha carregada ainda.</div>
-</div>
-
-<script>
-(function(){
-  const fmtBRL = n => (isFinite(n)?n:0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-  const fmtNum = n => (isFinite(n)?n:0).toLocaleString('pt-BR',{maximumFractionDigits:2});
-  const numOf = v => { if(v===undefined||v===null||v==='') return null; if(typeof v==='number') return v;
-    const s=String(v).replace(/[^\d,.\-]/g,'').replace(/\.(?=\d{3})/g,'').replace(',','.'); const n=parseFloat(s); return isFinite(n)?n:null; };
-
-  let downloadsCap = null;
-  if(typeof claude !== 'undefined' && claude.use){ claude.use('downloads').then(d => downloadsCap = d).catch(()=>{}); }
-
-  const MONTH_MAP = {janeiro:'Jan',fevereiro:'Fev',março:'Mar',marco:'Mar',abril:'Abr',maio:'Mai',junho:'Jun',julho:'Jul',agosto:'Ago',setembro:'Set',outubro:'Out',novembro:'Nov',dezembro:'Dez'};
-  function shortMonth(label){
-    const raw = (label||'').toString().trim();
-    if(/^\d+(\.\d+)?$/.test(raw)){
-      const serial = parseFloat(raw);
-      const d = new Date(Date.UTC(1899,11,30) + serial*86400000);
-      const abbr = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][d.getUTCMonth()];
-      return abbr+'/'+String(d.getUTCFullYear()).slice(2);
-    }
-    const m = raw.toLowerCase().match(/([a-zçã]+)\s*(?:de)?\s*(\d{4})?/);
-    if(!m) return label;
-    const abbr = MONTH_MAP[m[1]] || m[1].slice(0,3);
-    return m[2] ? abbr+'/'+m[2].slice(2) : abbr;
-  }
-
-  function rowKey(label){
-    const l = (label||'').toLowerCase().trim();
-    if(l.includes('faturamento') && l.includes('site')) return 'faturamentoSite';
-    if(l.includes('fat') && l.includes('google')) return 'fatGoogle';
-    if(l.includes('fat') && l.includes('meta')) return 'fatMeta';
-    if(l.includes('inv') && l.includes('google')) return 'invGoogle';
-    if(l.includes('inv') && l.includes('meta')) return 'invMeta';
-    if(l.includes('inv') && (l.includes('total')||l.includes('g+m'))) return 'invTotal';
-    if(l.includes('roas') && l.includes('site')) return 'roasSite';
-    if(l.includes('roas') && l.includes('google')) return 'roasGoogle';
-    if(l.includes('roas') && l.includes('meta')) return 'roasMeta';
-    if((l.includes('venda') && (l.includes('fora') || l.includes('externa')))) return 'vendasPorFora';
-    return null;
-  }
-
-  function parseWideTable(rows){
-    if(!rows || !rows.length) return [];
-    const header = rows[0];
-    const monthCols = [];
-    header.forEach((cell,idx)=>{
-      if(idx===0) return;
-      const c = (cell||'').toString().trim();
-      if(c) monthCols.push({idx, label:c});
-    });
-    const months = monthCols.map(mc=>({label:mc.label, short:shortMonth(mc.label), idx:mc.idx}));
-    const metrics = {};
-    rows.slice(1).forEach(r=>{
-      const key = rowKey(r[0]);
-      if(!key) return;
-      metrics[key] = metrics[key] || {};
-      months.forEach(m=> metrics[key][m.label] = numOf(r[m.idx]));
-    });
-    const result = months.map(m=>{
-      const get = k => (metrics[k] && metrics[k][m.label]!=null) ? metrics[k][m.label] : null;
-      const faturamentoSite = get('faturamentoSite');
-      const fatGoogle = get('fatGoogle'), fatMeta = get('fatMeta');
-      const invGoogle = get('invGoogle'), invMeta = get('invMeta');
-      const invTotal = get('invTotal') != null ? get('invTotal') : ((invGoogle||0)+(invMeta||0));
-      const roasSite = get('roasSite') != null ? get('roasSite') : (invTotal>0 && faturamentoSite!=null ? faturamentoSite/invTotal : null);
-      const roasGoogle = get('roasGoogle') != null ? get('roasGoogle') : (invGoogle>0 && fatGoogle!=null ? fatGoogle/invGoogle : null);
-      const roasMeta = get('roasMeta') != null ? get('roasMeta') : (invMeta>0 && fatMeta!=null ? fatMeta/invMeta : null);
-      return {mes:m.short, mesFull:m.label, faturamentoSite, fatGoogle, fatMeta, invGoogle, invMeta, invTotal, roasSite, roasGoogle, roasMeta, vendasPorFora:get('vendasPorFora')};
-    }).filter(d => [d.faturamentoSite,d.fatGoogle,d.fatMeta,d.invGoogle,d.invMeta,d.vendasPorFora].some(v=>v!=null && v!==0));
-    return result;
-  }
-
-  let currentData = [];
-
-  function fillMonthSelect(data){
-    const sel = document.getElementById('monthSelect');
-    sel.innerHTML = data.map((d,i)=>`<option value="${i}">${d.mesFull}</option>`).join('');
-    sel.value = data.length-1;
-  }
-
-  function renderChannelCard(name, dotClass, fat, inv, roas){
-    return `<div class="channel-card">
-      <div class="channel-card-header">
-        <div class="channel-name"><div class="channel-dot ${dotClass}"></div>${name}</div>
-        <div><div class="channel-roas-label">ROAS</div><div class="channel-roas">${roas!=null?roas.toFixed(2)+'x':'—'}</div></div>
-      </div>
-      <div class="channel-card-body">
-        <div class="channel-stat"><label>Faturamento</label><span>${fat!=null?fmtBRL(fat):'—'}</span></div>
-        <div class="channel-stat"><label>Investimento</label><span>${inv!=null?fmtBRL(inv):'—'}</span></div>
-      </div>
-    </div>`;
-  }
-
-  function renderChart(data){
-    const w = 900, h = 220, pad = 30;
-    const fatVals = data.map(d=>d.faturamentoSite||0);
-    const invVals = data.map(d=>d.invTotal||0);
-    const maxFat = Math.max(...fatVals, 1), maxInv = Math.max(...invVals, 1);
-    const stepX = data.length>1 ? (w-pad*2)/(data.length-1) : 0;
-    const pt = (vals,max) => vals.map((v,i)=>{
-      const x = pad + i*stepX; const y = h-pad - (v/max)*(h-pad*2); return x+','+y;
-    }).join(' ');
-    const labels = data.map((d,i)=>`<text x="${pad+i*stepX}" y="${h-8}" font-size="10" fill="#94A3B8" text-anchor="middle" font-family="Manrope">${d.mes}</text>`).join('');
-    document.getElementById('chartWrap').innerHTML = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;">
-      <polyline points="${pt(fatVals,maxFat)}" fill="none" stroke="#0D2B6E" stroke-width="2.5"/>
-      <polyline points="${pt(invVals,maxInv)}" fill="none" stroke="#3B82F6" stroke-width="2.5" stroke-dasharray="5,4"/>
-      ${labels}
-    </svg>`;
-  }
-
-  function renderTable(data){
-    const rows = data.map(d=>`<tr>
-      <td class="val">${d.mesFull}</td>
-      <td>${d.faturamentoSite!=null?fmtBRL(d.faturamentoSite):'—'}</td>
-      <td>${d.invGoogle!=null?fmtBRL(d.invGoogle):'—'}</td>
-      <td>${d.fatGoogle!=null?fmtBRL(d.fatGoogle):'—'}</td>
-      <td>${d.roasGoogle!=null?d.roasGoogle.toFixed(2)+'x':'—'}</td>
-      <td>${d.invMeta!=null?fmtBRL(d.invMeta):'—'}</td>
-      <td>${d.fatMeta!=null?fmtBRL(d.fatMeta):'—'}</td>
-      <td>${d.roasMeta!=null?d.roasMeta.toFixed(2)+'x':'—'}</td>
-      <td>${d.invTotal!=null?fmtBRL(d.invTotal):'—'}</td>
-      <td class="val">${d.roasSite!=null?d.roasSite.toFixed(2)+'x':'—'}</td>
-    </tr>`).join('');
-    document.getElementById('monthTable').innerHTML = `<thead><tr><th>Mês</th><th>Fat. Site</th><th>Inv. Google</th><th>Fat. Google</th><th>ROAS Google</th><th>Inv. Meta</th><th>Fat. Meta</th><th>ROAS Meta</th><th>Inv. Total</th><th>ROAS Site</th></tr></thead><tbody>${rows}</tbody>`;
-  }
-
-  function renderMonth(idx){
-    const d = currentData[idx];
-    if(!d) return;
-    document.getElementById('kpiFat').textContent = d.faturamentoSite!=null?fmtBRL(d.faturamentoSite):'—';
-    document.getElementById('kpiInv').textContent = d.invTotal!=null?fmtBRL(d.invTotal):'—';
-    document.getElementById('kpiRoas').textContent = d.roasSite!=null?d.roasSite.toFixed(2)+'x':'—';
-
-    // Delta Faturamento vs mês anterior
-    const prev = currentData[idx-1];
-    const deltaEl = document.getElementById('kpiFatDelta');
-    if(prev && prev.faturamentoSite && d.faturamentoSite!=null){
-      const pct = ((d.faturamentoSite-prev.faturamentoSite)/prev.faturamentoSite*100);
-      deltaEl.textContent = (pct>=0?'▲ ':'▼ ')+Math.abs(pct).toFixed(0)+'% vs '+prev.mes;
-      deltaEl.className = 'kpi-delta '+(pct>=0?'up':'down');
-    } else { deltaEl.textContent=''; }
-
-    /* ----- Comparativo Histórico (Faturamento Site vs média dos outros meses) ----- */
-    const compPctEl = document.getElementById('kpiCompPct');
-    const compDeltaEl = document.getElementById('kpiCompDelta');
-
-    const others = currentData
-      .map((m,i)=> i!==idx ? m.faturamentoSite : null)
-      .filter(v => v!=null && v>0);
-
-    if(others.length && d.faturamentoSite!=null && d.faturamentoSite>0){
-      const avg = others.reduce((a,b)=>a+b,0)/others.length;
-      const pct = ((d.faturamentoSite-avg)/avg*100);
-      compPctEl.textContent = (pct>=0?'+':'−')+Math.abs(pct).toFixed(0)+'%';
-      compDeltaEl.textContent = (pct>=0?'▲ Acima':'▼ Abaixo')+' da média histórica ('+fmtBRL(avg)+')';
-      compDeltaEl.className = 'kpi-delta '+(pct>=0?'up':'down');
-    } else {
-      compPctEl.textContent = '—';
-      compDeltaEl.textContent = others.length ? 'Sem valor no mês' : '';
-      compDeltaEl.className = 'kpi-delta';
-    }
-
-    document.getElementById('channelGrid').innerHTML =
-      renderChannelCard('Google Ads','channel-dot--google', d.fatGoogle, d.invGoogle, d.roasGoogle) +
-      renderChannelCard('Meta Ads','channel-dot--meta', d.fatMeta, d.invMeta, d.roasMeta);
-  }
-
-  function render(data){
-    currentData = data;
-    document.getElementById('configCard').classList.remove('show');
-    document.getElementById('uploadCard').style.display='none';
-    document.getElementById('emptyState').classList.remove('show');
-    document.getElementById('dashboard').style.display='block';
-    if(!data.length){ document.getElementById('emptyState').classList.add('show'); document.getElementById('dashboard').style.display='none'; return; }
-    document.getElementById('clientPeriod').textContent = data[0].mesFull + ' a ' + data[data.length-1].mesFull;
-    fillMonthSelect(data);
-    renderMonth(data.length-1);
-    renderChart(data);
-    renderTable(data);
-    try{ localStorage.setItem('dg-dashboard-data', JSON.stringify(data)); }catch(e){}
-  }
-  document.getElementById('monthSelect').addEventListener('change', e=>renderMonth(parseInt(e.target.value)));
-
-  function handleFile(file){
-    document.getElementById('fileStatus').textContent = 'Lendo ' + file.name + '...';
-    const reader = new FileReader();
-    reader.onload = e => {
-      try{
-        const wb = XLSX.read(e.target.result, {type:'array', cellDates:true});
-        const sheet = wb.Sheets[wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, {header:1, defval:'', raw:false, dateNF:'mmmm "de" yyyy'});
-        render(parseWideTable(rows));
-        document.getElementById('fileStatus').textContent = '';
-      }catch(err){ document.getElementById('fileStatus').textContent = 'Não consegui ler esse arquivo. Confira o formato.'; }
-    };
-    reader.readAsArrayBuffer(file);
-  }
-  const fileInput = document.getElementById('fileInput');
-  document.getElementById('btnUpload').onclick = () => fileInput.click();
-  document.getElementById('btnUploadTop').onclick = () => fileInput.click();
-  fileInput.onchange = e => { if(e.target.files[0]) handleFile(e.target.files[0]); };
-  const uploadCard = document.getElementById('uploadCard');
-  ['dragover','dragenter'].forEach(ev=>uploadCard.addEventListener(ev, e=>{e.preventDefault(); uploadCard.classList.add('drag');}));
-  ['dragleave','drop'].forEach(ev=>uploadCard.addEventListener(ev, e=>{e.preventDefault(); uploadCard.classList.remove('drag');}));
-  uploadCard.addEventListener('drop', e=>{ if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
-
-  async function downloadTemplate(){
-    const wb = XLSX.utils.book_new();
-    const aoa = [
-      ['Mês','janeiro de 2026','fevereiro de 2026'],
-      ['Faturamento Site',12529.32,5079.90],
-      ['Fat. Google',0,854.90],
-      ['Fat. Meta',2640.18,399.50],
-      ['Inv. Google Ads',0,236.96],
-      ['Inv. Meta Ads',542.52,611.76],
-      ['Vendas por fora','',''],
-    ];
-    const sheet = XLSX.utils.aoa_to_sheet(aoa);
-    XLSX.utils.book_append_sheet(wb, sheet, 'Dados');
-    const out = XLSX.write(wb, {type:'array', bookType:'xlsx'});
-    const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-    if(downloadsCap){ try{ await downloadsCap.save({filename:'modelo-dashboard-trafego.xlsx', data: blob}); return; }catch(e){} }
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href=url; a.download='modelo-dashboard-trafego.xlsx'; a.click();
-  }
-  document.getElementById('btnTemplate').onclick = downloadTemplate;
-  document.getElementById('btnTemplate2').onclick = downloadTemplate;
-
-  /* ---- Google Sheets auto-sync ---- */
-  const configCard = document.getElementById('configCard');
-  const syncBadge = document.getElementById('syncBadge');
-  const syncText = document.getElementById('syncText');
-  const configStatus = document.getElementById('configStatus');
-  let syncInterval = null;
-
-  function extractSheetId(url){ const m = (url||'').match(/\/d\/([a-zA-Z0-9-_]+)/); return m?m[1]:null; }
-  function extractGid(url){ const m = (url||'').match(/[?&#]gid=(\d+)/); return m?m[1]:'0'; }
-
-  async function syncFromSheet(sheetId, gid, silent){
-    try{
-      if(!silent) configStatus.textContent = 'Conectando...';
-      const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${gid}`;
-      const res = await fetch(url, { redirect: 'manual' });
-
-      if(res.type === 'opaqueredirect' || res.status === 0 || res.status === 302 || res.status === 401 || res.status === 403){
-        throw new Error('Essa planilha não está pública. No Google Sheets, vá em Compartilhar → Acesso geral → "Qualquer pessoa com o link" (Leitor) e tente de novo.');
-      }
-
-      const text = await res.text();
-      const looksLikeLogin = /accounts\.google\.com|<html|ServiceLogin|signin/i.test(text.slice(0,300));
-      if(!res.ok || looksLikeLogin){
-        throw new Error('Essa planilha não está acessível publicamente. Verifique o compartilhamento no Google Sheets.');
-      }
-
-      const parsed = Papa.parse(text.trim(), {skipEmptyLines:false});
-      const data = parseWideTable(parsed.data);
-      if(!data.length){
-        throw new Error('Consegui acessar a planilha, mas não encontrei linhas como "Faturamento Site", "Fat. Google" etc. Confira os nomes na coluna A.');
-      }
-
-      render(data);
-      const now = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-      syncBadge.style.display = 'flex';
-      syncText.textContent = 'Sincronizado às ' + now;
-      configStatus.textContent = 'Conectado. Atualiza automaticamente a cada 5 minutos.';
-      document.getElementById('btnDisconnect').style.display = 'inline-block';
-      try{ localStorage.setItem('dg-sheet-id', sheetId); localStorage.setItem('dg-sheet-gid', gid); }catch(e){}
-    }catch(err){
-      configStatus.textContent = err.message;
-      syncBadge.style.display = 'none';
-    }
-  }
-  function startAutoSync(sheetId, gid){
-    if(syncInterval) clearInterval(syncInterval);
-    syncFromSheet(sheetId, gid);
-    syncInterval = setInterval(()=>syncFromSheet(sheetId, gid, true), 5*60*1000);
-  }
-  document.getElementById('btnConfig').onclick = () => configCard.classList.toggle('show');
-  document.getElementById('btnConnect').onclick = () => {
-    const url = document.getElementById('sheetUrlInput').value;
-    const id = extractSheetId(url);
-    if(!id){ configStatus.textContent = 'Cole um link válido do Google Sheets.'; return; }
-    startAutoSync(id, extractGid(url));
-  };
-  document.getElementById('btnDisconnect').onclick = () => {
-    if(syncInterval) clearInterval(syncInterval);
-    try{ localStorage.removeItem('dg-sheet-id'); localStorage.removeItem('dg-sheet-gid'); }catch(e){}
-    syncBadge.style.display='none';
-    document.getElementById('btnDisconnect').style.display='none';
-    configStatus.textContent = 'Desconectado.';
-  };
-
-  /* ---- Campos persistentes (anotações e próximas ações) ---- */
-  const configNotes = document.getElementById('configNotes');
-  const actionsEditor = document.getElementById('actionsEditor');
-  const actionsHint = document.getElementById('actionsHint');
-  let hintTimer = null;
-  function flashSaved(el){
-    el.textContent = 'Salvo agora';
-    el.style.color = 'var(--green)';
-    if(hintTimer) clearTimeout(hintTimer);
-    hintTimer = setTimeout(()=>{ el.textContent = 'Salvo automaticamente neste navegador'; el.style.color=''; }, 1500);
-  }
-  try{
-    const n = localStorage.getItem('dg-config-notes'); if(n!=null) configNotes.value = n;
-    const a = localStorage.getItem('dg-actions'); if(a!=null) actionsEditor.value = a;
-  }catch(e){}
-  configNotes.addEventListener('input', ()=>{ try{ localStorage.setItem('dg-config-notes', configNotes.value); }catch(e){} });
-  actionsEditor.addEventListener('input', ()=>{ try{ localStorage.setItem('dg-actions', actionsEditor.value); flashSaved(actionsHint); }catch(e){} });
-
-  try{
-    const savedId = localStorage.getItem('dg-sheet-id');
-    if(savedId){
-      const gid = localStorage.getItem('dg-sheet-gid')||'0';
-      document.getElementById('sheetUrlInput').value = 'https://docs.google.com/spreadsheets/d/'+savedId+'/edit?gid='+gid;
-      configCard.classList.add('show');
-      startAutoSync(savedId, gid);
-    } else {
-      const saved = localStorage.getItem('dg-dashboard-data');
-      if(saved) render(JSON.parse(saved)); else document.getElementById('emptyState').classList.add('show');
-    }
-  }catch(e){}
-})();
-</script>
-</body>
-</html>
